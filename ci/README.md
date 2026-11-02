@@ -1,38 +1,39 @@
-# Jenkins deployment
+# Розгортання Jenkins
 
-The pipeline builds the trusted `main` branch of
-`https://github.com/CobbiFantom/desktop-jenkins.git` on two permanent agents.
-It does not execute pull requests from forks.
+Конвеєр збирає довірену гілку `main` репозиторію
+`https://github.com/CobbiFantom/desktop-jenkins.git` на двох постійних агентах.
+Запити на злиття з форків не виконуються.
 
-- Job: `desktop-pdf-translator`.
-- Agent labels: `macos` and `linux`, one executor each, exclusive mode.
-- Git polling: every two minutes, only new commits trigger a build.
-- Delivery: ZIP packages and JUnit results on the Jenkins build page.
-- Retention: ten builds. A successful platform archives its package even if the other platform fails.
+- Задача: `desktop-pdf-translator`.
+- Мітки агентів: `macos` і `linux`, по одному виконавцю, виключний режим.
+- Перевірка Git: кожні дві хвилини; збірка запускається лише для нових комітів.
+- Результати: ZIP-пакети та звіти JUnit на сторінці збірки Jenkins.
+- Зберігання: десять збірок. Успішна платформа архівує свій пакет, навіть якщо інша завершилася помилкою.
 
-The controller remains private. On the Mac, the existing SSH connection to
-the VPS forwards `127.0.0.1:18080` to the controller's `127.0.0.1:8080`.
-The Linux agent joins the existing `jenkins_default` Docker network.
-No additional public port or Docker socket is exposed to the build agents.
+Контролер залишається приватним. На Mac наявне SSH-з’єднання з VPS перенаправляє
+`127.0.0.1:18080` на адресу контролера `127.0.0.1:8080`.
+Linux-агент приєднується до наявної Docker-мережі `jenkins_default`.
+Агенти не отримують додаткових публічних портів чи доступу до Docker socket.
 
-## Mac service
+## Служби на Mac
 
-Java 21 is installed through Homebrew. Per-user LaunchAgents start the
-tunnel and the macOS inbound agent after login, and restart them if they exit:
+Java 21 встановлена через Homebrew. Користувацькі LaunchAgents запускають
+тунель та вхідний агент macOS після входу в систему й перезапускають їх
+у разі завершення:
 
 ```bash
 launchctl print gui/$(id -u)/dev.desktop-jenkins.tunnel
 launchctl print gui/$(id -u)/dev.desktop-jenkins.macos
 ```
 
-Private configuration and logs are under `~/jenkins-agent/`.
-The JVM connection arguments are kept in a file readable only by the local
-user, so the connection secret is not placed in the process command line.
-The Mac must be awake and connected to the network during macOS builds.
+Приватні налаштування та журнали розміщені в `~/jenkins-agent/`.
+Аргументи з’єднання JVM зберігаються у файлі, доступному для читання лише
+локальному користувачу, тому секрет з’єднання не потрапляє до командного
+рядка процесу. Під час збірок macOS Mac має бути активним і підключеним до мережі.
 
-## Linux service on the VPS
+## Служба Linux на VPS
 
-Files are deployed to `/opt/desktop-jenkins/linux-agent/`:
+Файли розгорнуто в `/opt/desktop-jenkins/linux-agent/`:
 
 ```bash
 cd /opt/desktop-jenkins/linux-agent
@@ -40,66 +41,71 @@ docker compose up -d --build
 docker compose logs --tail 50
 ```
 
-The image adds Python, Qt runtime libraries, fonts and build tools to the
-official Jenkins inbound-agent image. The container has a dedicated workspace
-volume, one CPU limit and a 1536 MiB memory limit. It restarts automatically.
-The Linux package is also launched with the X11 Qt backend under Xvfb, so
-missing GUI plugin libraries are detected even though the VPS has no monitor.
-The private JVM argument file is outside the repository at
-`/opt/desktop-jenkins/secrets/linux.args`, with read access for the agent user.
+Образ додає Python, бібліотеки виконання Qt, шрифти та інструменти збирання
+до офіційного образу вхідного агента Jenkins. Контейнер має окремий том робочої
+папки, ліміт в одне ядро CPU та 1536 МіБ пам’яті. Він перезапускається автоматично.
+Linux-пакет також запускається з графічним модулем X11 Qt під Xvfb, щоб виявляти
+відсутні бібліотеки графічних плагінів навіть на VPS без монітора.
+Приватний файл аргументів JVM зберігається поза репозиторієм:
+`/opt/desktop-jenkins/secrets/linux.args`; користувач агента має право його читати.
 
-## Bootstrap
+## Початкове налаштування
 
-`bootstrap-agents.groovy` creates the two nodes and writes their connection
-secrets to a private directory inside Jenkins home. Do not commit generated
-secrets. `bootstrap-job.groovy` creates the Pipeline from SCM and schedules
-the first run. These are administrator bootstrap scripts, not build steps.
+`bootstrap-agents.groovy` створює два вузли та записує секрети їхнього з’єднання
+до приватної папки всередині Jenkins home. Не додавайте згенеровані секрети
+до Git. `bootstrap-job.groovy` створює конвеєр зі SCM і планує перший запуск.
+Це адміністративні сценарії початкового налаштування, а не кроки збірки.
 
-After the first successful run, a `git push origin main` is enough to trigger
-the next build within approximately two minutes while Jenkins is running.
-Download packages from `desktop-pdf-translator -> build number -> Artifacts`.
-These are portable application ZIPs; signing and OS installers are separate tasks.
+Після першого успішного запуску достатньо `git push origin main`, щоб наступна
+збірка почалася приблизно за дві хвилини, доки Jenkins працює.
+Завантажуйте пакети через `desktop-pdf-translator → номер збірки → Artifacts`.
+Це переносні ZIP із застосунком; підписування та інсталятори ОС — окремі завдання.
 
-## Automatic GitHub Releases
+## Автоматичні релізи GitHub
 
-`desktop-pdf-releases` reads `Jenkinsfile.releases` from trusted `main` and checks
-published GitHub releases every two minutes. Draft releases are ignored.
-For each release missing packages it starts `desktop-pdf-translator` with
-`RELEASE_TAG`. That job resolves the tag to an exact commit, checks out that
-commit on both agents, runs tests and GUI smoke tests, and archives both ZIPs.
-Only after both platforms succeed does it upload these assets to the existing
-release, preserving its title and notes:
+`desktop-pdf-releases` читає `Jenkinsfile.releases` з довіреної гілки `main`
+і кожні дві хвилини перевіряє опубліковані релізи GitHub. Чернетки ігноруються.
+Для кожного релізу без готових пакетів задача запускає `desktop-pdf-translator`
+із параметром `RELEASE_TAG`. Ця задача визначає точний коміт тега, отримує його
+на обох агентах, запускає тести та перевірки графічного застосунку, а потім
+архівує обидва ZIP. Лише після успіху обох платформ вона завантажує ці файли
+до наявного релізу, зберігаючи його назву й опис:
 
 - `PDFUkrainian-Darwin-arm64.zip`
 - `PDFUkrainian-Linux-x86_64.zip`
 
-The pipeline/publishing helper comes from `main`; application code comes from
-the release tag. This also supports old tags created before release automation.
-Do not move published tags. The publisher checks the source commit again before
-uploading. Existing assets bearing the same `git:<commit>` label are skipped on
-retries; conflicting/unfinished assets require manual review and are never
-overwritten or deleted automatically. Partial uploads can be resumed by running
-the monitor or the build again. ZIP names match the two configured architectures;
-update `scripts/github_release.py` if agents change architecture.
+Конвеєр і допоміжний сценарій публікації беруться з `main`, а код застосунку —
+з тега релізу. Це підтримує і старі теги, створені до автоматизації публікації.
+Не пересувайте опубліковані теги на інші коміти: сценарій повторно перевіряє
+коміт перед завантаженням. Підпис кожного файлу містить назву пакета та
+`git:<коміт>`. Під час повторних запусків файли з тим самим комітом пропускаються;
+попередній формат підпису, що містив лише `git:<коміт>`, також підтримується.
+Конфліктні чи незавершені файли потребують ручної перевірки; вони ніколи не
+перезаписуються й не видаляються автоматично. Неповне завантаження можна
+продовжити повторним запуском задачі перевірки релізів або задачі збирання.
+Назви ZIP відповідають двом налаштованим архітектурам; якщо архітектура агентів
+зміниться, оновіть `scripts/github_release.py`.
 
-One-time setup:
+Одноразове налаштування:
 
-1. Create a fine-grained GitHub token scoped to **only this repository**, with
-   **Contents: Read and write** (Metadata read is implicit). No account permissions.
-2. Save it in Jenkins as global **Secret text**, ID `github-release-token`.
-   Keep the token out of Git, build parameters and shell command arguments.
-   The initial token expires after 90 days; replace the secret before expiry.
-3. Push the pipeline files to `main`. Run `bootstrap-releases.groovy` once in
-   the administrator Script Console to create and start the monitor job.
+1. Створіть fine-grained токен GitHub з доступом **лише до цього репозиторію**
+   та дозволом **Contents: Read and write**. Читання Metadata додається неявно.
+   Дозволи облікового запису не потрібні.
+2. Збережіть його в Jenkins як глобальний **Secret text** з ID `github-release-token`.
+   Не додавайте токен до Git, параметрів збірки чи аргументів командного рядка.
+   Початковий токен діє 90 днів; замініть секрет до завершення цього строку.
+3. Надішліть файли конвеєра до `main`. Один раз виконайте `bootstrap-releases.groovy`
+   в адміністративній Script Console, щоб створити та запустити задачу перевірки релізів.
 
-For each new version, use GitHub **Releases → Draft a new release**, choose/create
-its tag on the desired commit, then **Publish release**. No binary upload is
-needed. Within approximately two minutes the monitor starts the builds; total
-delivery time also depends on agent availability and build duration. The Mac
-must be awake. A plain tag push or saved draft does not publish packages.
+Для кожної нової версії відкрийте **Releases → Draft a new release** у GitHub,
+оберіть або створіть тег на потрібному коміті та натисніть **Publish release**.
+Завантажувати виконувані файли вручну не потрібно. Приблизно за дві хвилини задача
+перевірки релізів запустить збирання; загальний час також залежить від доступності
+агентів і тривалості збірок. Mac має бути активним. Саме лише надсилання тега
+або збереження чернетки не запускає публікацію пакетів.
 
-The monitor releases its Linux executor before waiting for the downstream build,
-so one executor per agent is sufficient. The private controller needs outbound
-HTTPS only. Ordinary `main` CI has no publication credential binding and continues
-to archive packages in Jenkins. All release uploads use the explicit binding in
-release stages, and credentials are not passed to application tests/builds.
+Задача перевірки релізів звільняє виконавця Linux перед очікуванням дочірньої
+збірки, тому достатньо одного виконавця на агент. Приватному контролеру потрібні
+лише вихідні HTTPS-з’єднання. Звичайний CI гілки `main` продовжує зберігати пакети
+в Jenkins без прив’язки облікових даних публікації. Токен підключається явно
+лише на кроках роботи з релізами; тести й збирання застосунку його не отримують.
