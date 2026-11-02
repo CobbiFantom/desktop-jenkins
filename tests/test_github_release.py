@@ -1,3 +1,4 @@
+import hashlib
 import io
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
@@ -5,31 +6,41 @@ import zipfile
 
 import pytest
 
-from scripts.github_release import ASSETS, GitHub, REPOSITORY, ReleaseError, pending_tag, publish
+from scripts.github_release import ASSETS, GitHub, REPOSITORY, ReleaseError, asset_label, publish
 
 
 COMMIT = "a" * 40
-TAG = "v.0.1.0"
+TAG = "v0.3.0"
 
 
 def release(**changes):
-    return {"id": 123, "tag_name": TAG, "draft": False,
-            "published_at": "2026-11-02T12:00:00Z",
+    return {"id": 123, "tag_name": TAG, "draft": True, "published_at": None,
             "upload_url": f"https://uploads.github.com/repos/{REPOSITORY}/releases/123/assets{{?name,label}}",
             **changes}
 
 
 class FakeGitHub:
-    def __init__(self, assets=()):
+    def __init__(self, assets=(), target=None):
         self.files = list(assets)
         self.uploads = []
-        self.label_updates = []
         self.sha = COMMIT
-        self.releases = [release()]
+        self.target = target
+        self.events = []
 
     def release(self, tag):
         assert tag == TAG
-        return self.releases[0]
+        return self.target
+
+    def create_release(self, tag, commit):
+        assert tag == TAG and commit == COMMIT
+        self.target = release()
+        self.events.append("draft")
+        return self.target
+
+    def publish_release(self, target):
+        assert {a['name'] for a in self.files} == set(ASSETS)
+        target.update(draft=False, published_at="2026-11-02T12:00:00Z")
+        self.events.append("publish")
 
     def commit(self, tag):
         return self.sha
@@ -37,20 +48,14 @@ class FakeGitHub:
     def assets(self, target):
         return iter(self.files)
 
-    def pages(self, path):
-        assert path == "/releases"
-        return iter(self.releases)
-
-    def request(self, url, *, upload=None, fields=None):
-        if fields is not None:
-            item = next(item for item in self.files if url == f"/releases/assets/{item['id']}")
-            item.update(fields)
-            self.label_updates.append(item['name'])
-            return item
+    def request(self, url, *, upload):
         query = parse_qs(urlsplit(url).query)
-        assert zipfile.is_zipfile(upload)
-        item = {"id": len(self.files) + 1000, "name": query["name"][0], "label": query["label"][0], "state": "uploaded"}
+        data = upload.read()
+        assert zipfile.is_zipfile(io.BytesIO(data))
+        item = {"name": query["name"][0], "label": query["label"][0], "state": "uploaded",
+                "digest": "sha256:" + hashlib.sha256(data).hexdigest(), "size": len(data)}
         self.uploads.append(item["name"])
+        self.events.append(item["name"])
         self.files.append(item)
         return item
 
@@ -64,41 +69,32 @@ def packages(tmp_path):
 
 
 def asset(name, **changes):
-    return {"id": ASSETS.index(name), "name": name, "label": "git:" + COMMIT, "state": "uploaded", **changes}
+    return {"name": name, "label": asset_label(name, COMMIT), "state": "uploaded", **changes}
 
 
-def test_publish_both_platforms_and_retry_is_idempotent(packages):
+def test_all_three_zips_verified_before_draft_is_published(packages):
     api = FakeGitHub()
     publish(api, TAG, COMMIT, packages)
+    assert api.events == ["draft", *ASSETS, "publish"]
+    assert api.target['draft'] is False
     publish(api, TAG, COMMIT, packages)
     assert api.uploads == list(ASSETS)
-    assert all(item['name'] in item['label'] for item in api.files)
-    assert pending_tag(api) == ""
+    assert api.events.count('publish') == 1
 
 
-def test_partial_upload_retry_publishes_only_missing_platform(packages):
-    api = FakeGitHub([asset(ASSETS[0])])
-    assert pending_tag(api) == TAG
+def test_partial_draft_retry_uploads_only_missing_files(packages):
+    api = FakeGitHub([asset(ASSETS[0])], target=release())
     publish(api, TAG, COMMIT, packages)
-    assert api.uploads == [ASSETS[1]]
-
-
-def test_existing_sha_labels_gain_platform_names_without_rebuilding():
-    api = FakeGitHub([asset(name) for name in ASSETS])
-    assert pending_tag(api) == ""
-    assert api.label_updates == list(ASSETS)
-    assert all(item['name'] in item['label'] for item in api.files)
-    assert pending_tag(api) == ""
-    assert api.label_updates == list(ASSETS)
-    assert api.uploads == []
+    assert api.uploads == list(ASSETS[1:])
+    assert api.events[-1] == 'publish'
 
 
 @pytest.mark.parametrize("changes", [{"label": None}, {"label": "git:" + "b" * 40}, {"state": "starter"}])
-def test_conflicting_existing_asset_is_never_overwritten(packages, changes):
-    api = FakeGitHub([asset(ASSETS[1], **changes)])
+def test_conflicts_never_overwrite_existing_assets_or_partially_upload(packages, changes):
+    api = FakeGitHub([asset(ASSETS[-1], **changes)], target=release())
     with pytest.raises(ReleaseError, match="Existing asset"):
         publish(api, TAG, COMMIT, packages)
-    assert api.uploads == []
+    assert api.events == []
 
 
 def test_moved_tag_cannot_receive_build_from_another_commit(packages):
@@ -106,10 +102,10 @@ def test_moved_tag_cannot_receive_build_from_another_commit(packages):
     api.sha = "b" * 40
     with pytest.raises(ReleaseError, match="tag moved"):
         publish(api, TAG, COMMIT, packages)
-    assert api.uploads == []
+    assert api.events == []
 
 
-def test_tag_moving_between_uploads_stops_publication(packages):
+def test_tag_moving_between_uploads_keeps_release_draft(packages):
     api = FakeGitHub()
     original = api.request
 
@@ -122,31 +118,41 @@ def test_tag_moving_between_uploads_stops_publication(packages):
     with pytest.raises(ReleaseError, match="tag moved"):
         publish(api, TAG, COMMIT, packages)
     assert api.uploads == [ASSETS[0]]
+    assert api.target['draft'] is True
 
 
-def test_missing_second_zip_does_not_partially_publish(packages):
-    (packages / ASSETS[1]).unlink()
+def test_corrupt_upload_cannot_publish_release(packages):
     api = FakeGitHub()
-    with pytest.raises(ReleaseError, match="Missing or invalid"):
+    original = api.request
+
+    def corrupt_request(*args, **kwargs):
+        result = original(*args, **kwargs)
+        result['digest'] = 'sha256:incorrect'
+        return result
+
+    api.request = corrupt_request
+    with pytest.raises(ReleaseError, match="ZIP integrity"):
         publish(api, TAG, COMMIT, packages)
-    assert api.uploads == []
+    assert api.target['draft'] is True
+    assert 'publish' not in api.events
 
 
-def test_drafts_are_not_selected():
+def test_missing_windows_zip_cannot_create_release(packages):
+    (packages / ASSETS[-1]).unlink()
     api = FakeGitHub()
-    api.releases = [release(draft=True), release(published_at=None)]
-    assert pending_tag(api) == ""
+    with pytest.raises(ReleaseError, match="exactly"):
+        publish(api, TAG, COMMIT, packages)
+    assert api.events == []
 
 
-def test_upload_url_from_another_host_is_rejected(packages):
-    api = FakeGitHub()
-    api.releases = [release(upload_url="https://example.com/collect")]
+def test_unexpected_upload_host_is_rejected(packages):
+    api = FakeGitHub(target=release(upload_url="https://example.com/collect"))
     with pytest.raises(ReleaseError, match="upload URL"):
         publish(api, TAG, COMMIT, packages)
-    assert not api.uploads
+    assert api.events == []
 
 
-def test_annotated_tags_are_resolved_to_commit():
+def test_annotated_tags_resolve_to_commit():
     api = GitHub("test-secret")
     paths = []
 
@@ -161,7 +167,19 @@ def test_annotated_tags_are_resolved_to_commit():
     assert paths == ["/git/ref/tags/release%2Ftest", "/git/tags/" + "b" * 40]
 
 
-def test_api_error_does_not_expose_credentials_or_response_body():
+def test_retry_finds_existing_draft_even_when_tag_endpoint_omits_it():
+    api = GitHub("test-secret")
+
+    def request(path):
+        if '/tags/' in path:
+            raise ReleaseError('not found', 404)
+        return [release()]
+
+    api.request = request
+    assert api.release(TAG)['draft'] is True
+
+
+def test_api_error_does_not_expose_token_or_response_body():
     secret = "test-secret-do-not-log"
     api = GitHub(secret)
 
@@ -179,13 +197,5 @@ def test_api_error_does_not_expose_credentials_or_response_body():
                                     "https://api.github.com@evil.example/repos/" + REPOSITORY + "/releases",
                                     "http://api.github.com/repos/" + REPOSITORY + "/releases"])
 def test_api_never_sends_token_to_unexpected_origin(url):
-    api = GitHub("test-secret")
     with pytest.raises(ReleaseError, match="Unexpected"):
-        api.request(url)
-
-
-def test_published_release_is_required_for_resolve():
-    api = GitHub("test-secret")
-    api.request = lambda path: release(draft=True)
-    with pytest.raises(ReleaseError, match="must be published"):
-        api.release(TAG)
+        GitHub("test-secret").request(url)

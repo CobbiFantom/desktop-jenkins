@@ -4,7 +4,7 @@
 перекладає його українською через **MyMemory або Google Translate / deep-translator**
 і зберігає новий PDF. Для перекладу потрібен інтернет; сервер, Docker та API-ключі
 не потрібні. **PyInstaller** пакує застосунок разом із Python і Qt.
-**Jenkins** запускає тести, збирає застосунок і зберігає ZIP-артефакти.
+**GitHub Actions** запускає тести та збирає релізні ZIP для Windows, Linux і macOS.
 
 ## Швидкий початок
 
@@ -128,109 +128,81 @@ PyInstaller збирає під поточну ОС та архітектуру:
 без сертифіката підпису. Поширення через магазини, інсталятор та автоматичні
 оновлення до MVP не входять.
 
-## Jenkins
+## GitHub Actions: тести та релізи
 
-`Jenkinsfile` запускає **дві збірки паралельно** через Declarative Matrix:
+Репозиторій: [CobbiFantom/desktop-jenkins](https://github.com/CobbiFantom/desktop-jenkins).
+Збірки виконуються на тимчасових машинах GitHub; власні агенти, VPS і ввімкнений
+Mac для цього не потрібні. Журнали та результати доступні на вкладці
+[Actions](https://github.com/CobbiFantom/desktop-jenkins/actions).
 
-Репозиторій: `https://github.com/CobbiFantom/desktop-jenkins.git`.
-Задача `desktop-pdf-translator` читає `Jenkinsfile` із гілки `main`.
-Після першого запуску Jenkins перевіряє Git кожні дві хвилини й автоматично
-збирає нові коміти. Публічний webhook для цього не потрібен.
-Деталі агентів та автозапуску: [ci/README.md](ci/README.md).
+### Push у main — лише тести
 
-```text
-Jenkins controller у Docker на VPS
-  ├── агент macos на Mac → тести → .app → перевірка запуску → ZIP → Artifacts
-  └── агент linux на VPS → тести → Linux-застосунок → перевірка запуску → ZIP → Artifacts
-```
-
-`agent none` означає, що controller лише керує запуском. Linux-агент можна
-розмістити на тому ж VPS окремим процесом або контейнером. Наявність контейнера
-Jenkins сама по собі не створює агент `linux`.
-
-Налаштування перед першим запуском:
-
-1. Додайте проєкт у Git. Створіть у Jenkins задачу **Pipeline from SCM**,
-   вкажіть репозиторій і шлях `Jenkinsfile`. Потрібні плагіни Pipeline
-   (з підтримкою Declarative Matrix), Git, JUnit та Timestamper.
-2. У **Manage Jenkins → Nodes** додайте два агенти з мітками `macos` та `linux`.
-   На кожному потрібні сумісна з вашим Jenkins Java, Git та Python 3.10–3.13.
-   Обидва агенти мають бути online для одночасної роботи. Рекомендований
-   початковий Number of executors — 1 на агенті, 0 на controller.
-3. Для Mac задайте окремий Remote root directory, наприклад
-   `/Users/cobbi/jenkins-agent`, а не папку розробки цього проєкту.
-   Для Linux — окрему папку, доступну користувачу агента, наприклад
-   `/home/jenkins/agent`.
-4. На Linux потрібні модуль `venv`, `binutils`, системні бібліотеки Qt
-   (зокрема OpenGL/EGL, D-Bus, xkbcommon, fontconfig) і шрифти з кирилицею.
-   Якщо агент у контейнері, встановлюйте їх саме в образ агента.
-5. У **Build with Parameters** перевірте `MACOS_PYTHON` (типово
-   `/opt/homebrew/bin/python3.13`) та `LINUX_PYTHON` (типово `python3`).
-   Значення — виконуваний файл Python, без додаткових аргументів.
-6. Запустіть build. Кожен агент виконає Checkout → Install → Test →
-   Build desktop → Smoke test, package and archive.
-
-Кожна гілка працює у власній папці `ci-macos` або `ci-linux` усередині
-Jenkins workspace. Перед checkout очищується лише ця папка. Свіжі venv,
-звіти та пакети не використовуються повторно з минулого запуску.
-JUnit-звіти мають назви й префікси тестів за платформою.
-`QT_QPA_PLATFORM=offscreen` дозволяє тестувати Qt без монітора.
-
-Гілки не зупиняють одна одну при помилці. Успішна гілка одразу архівує свій
-ZIP, навіть якщо інша завершилася помилкою. Загальний статус такого build
-буде невдалим; пакет успішної платформи залишиться доступним.
-Загальний timeout — 45 хвилин, для кожної гілки — 30 хвилин разом з
-очікуванням агента. Зберігаються останні 10 запусків та їхні артефакти.
-
-### Де завантажити пакети
-
-У Jenkins відкрийте **задачу → номер запуску → Artifacts**:
-
-```text
-dist/PDFUkrainian-Darwin-arm64.zip       # для цього Mac
-dist/PDFUkrainian-Linux-x86_64.zip       # приклад для VPS x86_64
-```
-
-Архітектура в назві Linux-пакета залежить від VPS; ARM64 матиме іншу назву.
-Це ZIP з готовим застосунком; DMG, DEB і майстер встановлення поки не створюються.
-Архівування копіює файли з агента у сховище артефактів Jenkins — тримати Mac
-online для подальшого завантаження вже збереженого пакета не потрібно.
-
-### Автоматична публікація в GitHub Releases
-
-Для спільного доступу відкрийте [GitHub Releases](https://github.com/CobbiFantom/desktop-jenkins/releases).
-Задача `desktop-pdf-releases` перевіряє опубліковані релізи кожні дві хвилини.
-Достатньо створити тег потрібної версії та натиснути **Publish release** у GitHub:
-Jenkins збере саме коміт цього тега на Mac і Linux, перевірить обидві збірки та
-додасть два готові ZIP до релізу. Чернетки не обробляються. Автоматичні архіви
-`Source code` залишаються архівами вихідного коду.
-
-Публікація потребує успішних перевірок обох платформ і доступного Mac під час
-збірки. Після завантаження ZIP можна скачувати з GitHub незалежно від Jenkins
-або Mac. Повторний запуск продовжує неповне завантаження; наявні файли з іншим
-походженням автоматично не перезаписуються. Налаштування токена та відновлення
-після помилок описані в [ci/README.md](ci/README.md#автоматичні-релізи-github).
-
-За стандартного локального сховища Jenkins у Docker фізичний шлях буде на
-зразок `/var/jenkins_home/jobs/<job>/builds/<номер>/archive/dist/`.
-Для folder/multibranch jobs шлях має додаткові вкладені папки `jobs/`.
-На самому VPS він залежить від volume або bind mount контейнера. Подивитися
-монтування можна командою (замініть `JENKINS_CONTAINER` на назву контейнера):
+`.github/workflows/ci.yml` запускає тести на Ubuntu 24.04 x86_64,
+Windows Server 2022 x86_64 і macOS 15 ARM64 після push у `main`.
+ZIP та релізи в цьому сценарії не створюються. Звіти JUnit зберігаються
+в Actions Artifacts протягом 14 днів.
 
 ```bash
-docker inspect JENKINS_CONTAINER --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+git add .
+git commit -m "Опис змін"
+git push origin main
 ```
 
-Папка `/var/jenkins_home` має зберігатися у постійному volume/bind mount, щоб
-результати залишалися після перевідтворення контейнера. Якщо налаштований
-зовнішній Artifact Manager, фізичне сховище буде визначене ним.
+### Push тега — збирання та публікація релізу
 
-Ключі перекладачів не потрібні: тести використовують підставні відповіді.
-Для встановлення залежностей потрібен доступ до PyPI. Підключення агентів
-та запуск у вашому Jenkins виконуються окремо від зміни файлів проєкту.
+Після успішного CI створіть новий тег на потрібному коміті, наприклад:
 
-Довідка: [Jenkins Matrix](https://www.jenkins.io/doc/book/pipeline/syntax/#matrix),
-[архівування артефактів](https://www.jenkins.io/doc/pipeline/steps/core/#archiveartifacts-archive-the-artifacts).
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+`.github/workflows/release.yml` реагує на push тегів `v*` і виконує:
+
+1. Отримання коду коміту тега на трьох ОС.
+2. Встановлення Python 3.13 та залежностей із lock-файлу.
+3. Тести, збирання PyInstaller і перевірку запуску готового застосунку.
+4. Пакування та збереження ZIP в Actions Artifacts.
+5. Після успіху всіх трьох збірок — створення GitHub Release з описом змін,
+   завантаження ZIP у чернетку, перевірку SHA-256 та публікацію релізу.
+
+Натискати **Publish release** вручну не потрібно. Workflow використовує
+вбудований короткочасний `GITHUB_TOKEN`; право `contents: write` має лише
+задача публікації. Власний токен додавати не потрібно.
+
+У [GitHub Releases](https://github.com/CobbiFantom/desktop-jenkins/releases) з’являться:
+
+```text
+PDFUkrainian-Darwin-arm64.zip
+PDFUkrainian-Linux-x86_64.zip
+PDFUkrainian-Windows-x86_64.zip
+```
+
+Це ZIP із готовим застосунком. Автоматичні посилання `Source code` — архіви
+вихідного коду, які GitHub додає окремо. Для Windows/Linux потрібно розпакувати
+всю папку. macOS-збірка призначена для Apple Silicon; Intel Mac потребує окремої
+збірки. Linux-пакет збирається на Ubuntu 24.04; сумісність з іншими дистрибутивами
+потребує окремої перевірки.
+
+Не пересувайте опубліковані теги. Сценарій повторно перевіряє коміт перед
+публікацією, не видаляє та не перезаписує наявні файли. Після часткового збою
+завантаження можна повторити workflow: пакети з підтвердженим комітом
+пропускаються. Конфліктні файли потребують ручної перевірки.
+
+Workflow має бути присутній у коміті тега: спочатку надішліть конфігурацію
+до `main`, потім створюйте новий тег. Старі теги без workflow не запускають
+нову автоматизацію. Тег не змінює внутрішню версію macOS-застосунку — вона
+задається в `PDFUkrainian.spec`.
+
+### Ручна перевірка трьох збірок
+
+Відкрийте **Actions → Desktop release → Run workflow**, оберіть `main` і запустіть.
+Ручний запуск збере три ZIP та збереже їх в **Artifacts** на 14 днів.
+GitHub Release створюється лише після push тега. Звіт тестів зберігається
+навіть за невдалого тестового запуску; успішні платформи завершують роботу,
+якщо інша платформа зазнала помилки.
+
+Деталі та міграція з Jenkins: [ci/README.md](ci/README.md).
 
 ## Тести
 
@@ -266,8 +238,9 @@ tests/                 тести логіки та інтеграції без 
 PDFUkrainian.spec       конфігурація PyInstaller
 scripts/package.py     переносний архів збірки
 scripts/github_release.py  завантаження пакетів у GitHub Releases
-Jenkinsfile            тести, збирання та публікація пакетів
-Jenkinsfile.releases   пошук опублікованих релізів і запуск збірок
+.github/workflows/ci.yml       тести після push у main
+.github/workflows/release.yml  три збірки та реліз після push тега
+.github/actions/setup/        спільне налаштування Python і Qt
 ```
 
 Наступний крок після запуску: пройдіть шлях `start_translation()` →
