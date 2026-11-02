@@ -43,6 +43,8 @@ docker compose logs --tail 50
 The image adds Python, Qt runtime libraries, fonts and build tools to the
 official Jenkins inbound-agent image. The container has a dedicated workspace
 volume, one CPU limit and a 1536 MiB memory limit. It restarts automatically.
+The Linux package is also launched with the X11 Qt backend under Xvfb, so
+missing GUI plugin libraries are detected even though the VPS has no monitor.
 The private JVM argument file is outside the repository at
 `/opt/desktop-jenkins/secrets/linux.args`, with read access for the agent user.
 

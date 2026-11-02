@@ -96,7 +96,8 @@ pipeline {
                                     if [ "$PLATFORM" = macos ]; then
                                         dist/PDFUkrainian.app/Contents/MacOS/PDFUkrainian --smoke-test
                                     else
-                                        dist/PDFUkrainian/PDFUkrainian --smoke-test
+                                        # Exercise the actual Linux window backend, not only offscreen Qt.
+                                        QT_QPA_PLATFORM=xcb xvfb-run -a dist/PDFUkrainian/PDFUkrainian --smoke-test
                                     fi
                                     .venv/bin/python scripts/package.py
                                 '''
