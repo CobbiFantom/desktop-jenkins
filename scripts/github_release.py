@@ -35,7 +35,7 @@ class GitHub:
             raise ReleaseError("GITHUB_TOKEN is missing; configure github-release-token in Jenkins")
         self.opener = build_opener(NoRedirects())
 
-    def request(self, path, *, upload=None):
+    def request(self, path, *, upload=None, fields=None):
         url = API + "/repos/" + REPOSITORY + path if path.startswith("/") else path
         parsed = urlsplit(url)
         host = "uploads.github.com" if upload else "api.github.com"
@@ -51,7 +51,12 @@ class GitHub:
         if upload:
             headers.update({"Content-Type": "application/zip",
                             "Content-Length": str(os.fstat(upload.fileno()).st_size)})
-        req = Request(url, data=upload, headers=headers, method="POST" if upload else "GET")
+        data = upload
+        if fields is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(fields).encode("utf-8")
+        method = "PATCH" if fields is not None else "POST" if upload else "GET"
+        req = Request(url, data=data, headers=headers, method=method)
         try:
             with self.opener.open(req, timeout=120) as response:
                 return json.load(response)
@@ -126,8 +131,16 @@ def pending_tag(api):
             continue
         tag = validate_tag(release["tag_name"])
         commit = api.commit(tag)
-        if not complete(api.assets(release), commit):
+        assets = list(api.assets(release))
+        if not complete(assets, commit):
             return tag
+        # Migrate the original SHA-only labels without rebuilding or replacing binaries.
+        for asset in assets:
+            if asset['name'] in ASSETS and asset.get('label') == 'git:' + commit:
+                label = asset_label(asset['name'], commit)
+                updated = api.request(f"/releases/assets/{asset['id']}", fields={"label": label})
+                if updated.get('label') != label:
+                    raise ReleaseError("GitHub did not confirm the download label update")
     return ""
 
 

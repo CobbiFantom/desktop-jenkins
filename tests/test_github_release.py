@@ -23,6 +23,7 @@ class FakeGitHub:
     def __init__(self, assets=()):
         self.files = list(assets)
         self.uploads = []
+        self.label_updates = []
         self.sha = COMMIT
         self.releases = [release()]
 
@@ -40,10 +41,15 @@ class FakeGitHub:
         assert path == "/releases"
         return iter(self.releases)
 
-    def request(self, url, *, upload):
+    def request(self, url, *, upload=None, fields=None):
+        if fields is not None:
+            item = next(item for item in self.files if url == f"/releases/assets/{item['id']}")
+            item.update(fields)
+            self.label_updates.append(item['name'])
+            return item
         query = parse_qs(urlsplit(url).query)
         assert zipfile.is_zipfile(upload)
-        item = {"name": query["name"][0], "label": query["label"][0], "state": "uploaded"}
+        item = {"id": len(self.files) + 1000, "name": query["name"][0], "label": query["label"][0], "state": "uploaded"}
         self.uploads.append(item["name"])
         self.files.append(item)
         return item
@@ -58,7 +64,7 @@ def packages(tmp_path):
 
 
 def asset(name, **changes):
-    return {"name": name, "label": "git:" + COMMIT, "state": "uploaded", **changes}
+    return {"id": ASSETS.index(name), "name": name, "label": "git:" + COMMIT, "state": "uploaded", **changes}
 
 
 def test_publish_both_platforms_and_retry_is_idempotent(packages):
@@ -75,6 +81,16 @@ def test_partial_upload_retry_publishes_only_missing_platform(packages):
     assert pending_tag(api) == TAG
     publish(api, TAG, COMMIT, packages)
     assert api.uploads == [ASSETS[1]]
+
+
+def test_existing_sha_labels_gain_platform_names_without_rebuilding():
+    api = FakeGitHub([asset(name) for name in ASSETS])
+    assert pending_tag(api) == ""
+    assert api.label_updates == list(ASSETS)
+    assert all(item['name'] in item['label'] for item in api.files)
+    assert pending_tag(api) == ""
+    assert api.label_updates == list(ASSETS)
+    assert api.uploads == []
 
 
 @pytest.mark.parametrize("changes", [{"label": None}, {"label": "git:" + "b" * 40}, {"state": "starter"}])
