@@ -66,6 +66,7 @@ def test_publish_both_platforms_and_retry_is_idempotent(packages):
     publish(api, TAG, COMMIT, packages)
     publish(api, TAG, COMMIT, packages)
     assert api.uploads == list(ASSETS)
+    assert all(item['name'] in item['label'] for item in api.files)
     assert pending_tag(api) == ""
 
 

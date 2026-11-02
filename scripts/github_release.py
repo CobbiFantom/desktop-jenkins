@@ -105,9 +105,18 @@ def validate_tag(tag):
     return tag
 
 
+def asset_label(name, commit):
+    # GitHub displays the label instead of the file name in the download list.
+    return f"{name} (git:{commit})"
+
+
+def matches_source(asset, commit):
+    return asset.get("label") in ("git:" + commit, asset_label(asset["name"], commit))
+
+
 def complete(assets, commit):
     ready = {asset["name"] for asset in assets
-             if asset.get("state") == "uploaded" and asset.get("label") == "git:" + commit}
+             if asset.get("state") == "uploaded" and matches_source(asset, commit)}
     return set(ASSETS) <= ready
 
 
@@ -139,11 +148,10 @@ def publish(api, tag, commit, directory):
         raise ReleaseError("Release tag moved after checkout; refusing to publish different source code")
     url = upload_url(release)
     existing = {asset["name"]: asset for asset in api.assets(release)}
-    label = "git:" + commit
     # Check all conflicts/files before uploading anything. Existing files are never deleted.
     for name in ASSETS:
         asset = existing.get(name)
-        if asset and (asset.get("label") != label or asset.get("state") != "uploaded"):
+        if asset and (not matches_source(asset, commit) or asset.get("state") != "uploaded"):
             raise ReleaseError(f"Existing asset {name} has unknown provenance or is incomplete; review it in GitHub")
         file = Path(directory) / name
         if not file.is_file() or not zipfile.is_zipfile(file):
@@ -155,6 +163,7 @@ def publish(api, tag, commit, directory):
         # Recheck before each upload, including after a previous upload took time.
         if api.commit(tag) != commit:
             raise ReleaseError("Release tag moved during publication; refusing further uploads")
+        label = asset_label(name, commit)
         with (Path(directory) / name).open("rb") as stream:
             result = api.request(url + "?" + urlencode({"name": name, "label": label}), upload=stream)
         if result.get("state") != "uploaded" or result.get("name") != name or result.get("label") != label:
