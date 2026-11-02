@@ -58,5 +58,48 @@ the first run. These are administrator bootstrap scripts, not build steps.
 After the first successful run, a `git push origin main` is enough to trigger
 the next build within approximately two minutes while Jenkins is running.
 Download packages from `desktop-pdf-translator -> build number -> Artifacts`.
-These are portable application ZIPs; signing, OS installers and GitHub Releases
-are separate release tasks.
+These are portable application ZIPs; signing and OS installers are separate tasks.
+
+## Automatic GitHub Releases
+
+`desktop-pdf-releases` reads `Jenkinsfile.releases` from trusted `main` and checks
+published GitHub releases every two minutes. Draft releases are ignored.
+For each release missing packages it starts `desktop-pdf-translator` with
+`RELEASE_TAG`. That job resolves the tag to an exact commit, checks out that
+commit on both agents, runs tests and GUI smoke tests, and archives both ZIPs.
+Only after both platforms succeed does it upload these assets to the existing
+release, preserving its title and notes:
+
+- `PDFUkrainian-Darwin-arm64.zip`
+- `PDFUkrainian-Linux-x86_64.zip`
+
+The pipeline/publishing helper comes from `main`; application code comes from
+the release tag. This also supports old tags created before release automation.
+Do not move published tags. The publisher checks the source commit again before
+uploading. Existing assets bearing the same `git:<commit>` label are skipped on
+retries; conflicting/unfinished assets require manual review and are never
+overwritten or deleted automatically. Partial uploads can be resumed by running
+the monitor or the build again. ZIP names match the two configured architectures;
+update `scripts/github_release.py` if agents change architecture.
+
+One-time setup:
+
+1. Create a fine-grained GitHub token scoped to **only this repository**, with
+   **Contents: Read and write** (Metadata read is implicit). No account permissions.
+2. Save it in Jenkins as global **Secret text**, ID `github-release-token`.
+   Keep the token out of Git, build parameters and shell command arguments.
+   The initial token expires after 90 days; replace the secret before expiry.
+3. Push the pipeline files to `main`. Run `bootstrap-releases.groovy` once in
+   the administrator Script Console to create and start the monitor job.
+
+For each new version, use GitHub **Releases → Draft a new release**, choose/create
+its tag on the desired commit, then **Publish release**. No binary upload is
+needed. Within approximately two minutes the monitor starts the builds; total
+delivery time also depends on agent availability and build duration. The Mac
+must be awake. A plain tag push or saved draft does not publish packages.
+
+The monitor releases its Linux executor before waiting for the downstream build,
+so one executor per agent is sufficient. The private controller needs outbound
+HTTPS only. Ordinary `main` CI has no publication credential binding and continues
+to archive packages in Jenkins. All release uploads use the explicit binding in
+release stages, and credentials are not passed to application tests/builds.
