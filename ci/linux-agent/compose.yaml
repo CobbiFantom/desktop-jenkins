@@ -1,0 +1,27 @@
+services:
+  linux-agent:
+    build: .
+    image: local/pdf-uk-linux-agent:jdk21
+    container_name: pdf-uk-linux-agent
+    init: true
+    restart: unless-stopped
+    mem_limit: 1536m
+    cpus: 1.0
+    # JVM argument file keeps the connection secret out of process arguments.
+    entrypoint: [java]
+    command: ['@/run/secrets/linux_agent_args']
+    volumes:
+      - linux-workspace:/home/jenkins/agent
+    secrets:
+      - linux_agent_args
+    networks:
+      - jenkins
+secrets:
+  linux_agent_args:
+    file: /opt/desktop-jenkins/secrets/linux.args
+volumes:
+  linux-workspace:
+networks:
+  jenkins:
+    external: true
+    name: jenkins_default
